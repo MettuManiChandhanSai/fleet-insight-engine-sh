@@ -20,7 +20,11 @@ const ReportInput = z.object({
 // ---------------------------------------------------------------------------
 // AI backends
 //
-// 1. Ollama (preferred when reachable)
+// 1. Groq (free tier, no credit card — https://console.groq.com)
+//    - GROQ_API_KEY: free API key from console.groq.com
+//    - GROQ_MODEL: optional override, defaults to "llama-3.3-70b-versatile".
+//
+// 2. Ollama (preferred when reachable)
 //    - OLLAMA_BASE_URL: e.g. "http://localhost:11434" for local dev, or a
 //      public tunnel URL (ngrok / cloudflared) when the app runs on a server.
 //      NOTE: when this app is deployed or running in a cloud preview,
@@ -31,6 +35,44 @@ const ReportInput = z.object({
 // 2. Vercel AI Gateway (automatic fallback, zero config in previews)
 //    - GATEWAY_MODEL: optional override, defaults to "openai/gpt-5.4-mini".
 // ---------------------------------------------------------------------------
+
+async function callGroq(system: string, user: string): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY not set");
+  const model = process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile";
+
+  console.log(`[v0] Trying Groq with model "${model}"`);
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature: 0.3,
+      max_tokens: 1024,
+      response_format: { type: "json_object" },
+    }),
+  });
+
+  if (!res.ok) {
+    const t = await res.text();
+    if (res.status === 401) throw new Error("Groq API key is invalid. Get a free key at console.groq.com");
+    if (res.status === 429) throw new Error("Groq rate limit hit (free tier). Wait a moment and try again.");
+    throw new Error(`Groq API error ${res.status}: ${t.slice(0, 150)}`);
+  }
+
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error("Empty response from Groq");
+  console.log("[v0] Groq responded successfully");
+  return content;
+}
 
 async function callOllama(system: string, user: string, timeoutMs: number): Promise<string> {
   const baseUrl = (process.env.OLLAMA_BASE_URL ?? "http://localhost:11434").replace(/\/$/, "");
@@ -99,23 +141,32 @@ async function callGateway(system: string, user: string): Promise<string> {
 }
 
 /**
- * Try Ollama first (short timeout if it's just the default localhost probe,
- * long timeout if the user explicitly configured OLLAMA_BASE_URL), then fall
- * back to the Vercel AI Gateway so the analyzer always works.
+ * Backend chain: Groq (free key) → Ollama (if configured) → AI Gateway.
+ * Whichever is available first wins, so the analyzer always works.
  */
 async function callAI(system: string, user: string): Promise<string> {
-  const hasExplicitOllama = Boolean(process.env.OLLAMA_BASE_URL);
-  // Local models are slow → generous timeout when explicitly configured.
-  // Default localhost probe → fail fast (Ollama almost certainly isn't there).
-  const timeoutMs = hasExplicitOllama ? 120000 : 4000;
+  // 1. Groq — free tier, no credit card required.
+  if (process.env.GROQ_API_KEY) {
+    try {
+      return await callGroq(system, user);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.log(`[v0] Groq failed (${msg.slice(0, 120)}). Trying next backend.`);
+    }
+  }
 
+  // 2. Ollama — long timeout when explicitly configured, fast probe otherwise.
+  const hasExplicitOllama = Boolean(process.env.OLLAMA_BASE_URL);
+  const timeoutMs = hasExplicitOllama ? 120000 : 4000;
   try {
     return await callOllama(system, user, timeoutMs);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.log(`[v0] Ollama unavailable (${msg.slice(0, 120)}). Falling back to AI Gateway.`);
-    return await callGateway(system, user);
   }
+
+  // 3. Vercel AI Gateway — last resort.
+  return await callGateway(system, user);
 }
 
 function parseJsonResponse<T>(raw: string): T {
