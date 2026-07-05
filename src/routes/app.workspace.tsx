@@ -49,11 +49,50 @@ function Workspace() {
         return;
       }
       const first = s[0], last = s[s.length-1];
-      const summary = `${s.length} samples over ${Math.round(s.length*10/60)} min. RPM ${first.rpm}→${last.rpm}, Coolant ${first.temp}→${last.temp}°C, Load ${first.load}→${last.load}%, Speed ${first.speed}→${last.speed} km/h. Coolant crossed 94°C ${s.findIndex(x=>x.temp>=94)>=0 ? `at index ${s.findIndex(x=>x.temp>=94)}` : "never"}.`;
-      console.log("[v0] Running AI analysis for vehicle:", session.vehicle_id);
-      const res = await runAnalyze({ data: { dtc_code: session.dtc_code ?? "UNKNOWN", vehicle_id: session.vehicle_id, trend_summary: summary } });
+      
+      // Build detailed telemetry summary with specific anomalies
+      const avgRpm = Math.round(s.reduce((sum, x) => sum + x.rpm, 0) / s.length);
+      const maxTemp = Math.max(...s.map(x => x.temp));
+      const minTemp = Math.min(...s.map(x => x.temp));
+      const tempViolations = s.filter(x => x.temp > 94).length;
+      const avgLoad = Math.round(s.reduce((sum, x) => sum + x.load, 0) / s.length);
+      
+      const summary = `${s.length} samples captured over ${Math.round(s.length*10/60)} minutes.
+
+ENGINE RPM: ${first.rpm} → ${last.rpm} RPM (average: ${avgRpm} RPM)
+COOLANT TEMPERATURE: ${first.temp}°C → ${last.temp}°C (min: ${minTemp}°C, max: ${maxTemp}°C, violations >94°C: ${tempViolations} samples)
+ENGINE LOAD: ${first.load}% → ${last.load}% (average: ${avgLoad}%)
+VEHICLE SPEED: ${first.speed} → ${last.speed} km/h
+
+ANOMALIES:
+- Temperature trend: ${last.temp > first.temp ? "RISING" : "FALLING"} (${Math.abs(last.temp - first.temp)}°C change)
+- Load pattern: ${last.load > first.load ? "INCREASING" : "DECREASING"} (${Math.abs(last.load - first.load)}% change)
+- RPM behavior: ${last.rpm > first.rpm ? "ACCELERATING" : "DECELERATING"} (${Math.abs(last.rpm - first.rpm)} RPM change)`;
+
+      // Fetch prior analyses for this vehicle to build history context
+      const { data: priorAnalyses } = await supabase.from("analyses")
+        .select("dtc_code,deviation_summary,ai_suggested_causes")
+        .eq("vehicle_id", session.vehicle_id)
+        .neq("id", session.id)
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+      let history = "No prior diagnostic history for this vehicle.";
+      if (priorAnalyses && priorAnalyses.length > 0) {
+        history = priorAnalyses.map((a, idx) => 
+          `Prior Case ${idx + 1} (DTC: ${a.dtc_code}): ${(a.deviation_summary as any)?.text || "..."}`
+        ).join("\n");
+      }
+
+      console.log("[v0] Running comprehensive AI analysis for vehicle:", session.vehicle_id);
+      const res = await runAnalyze({ data: { 
+        dtc_code: session.dtc_code ?? "UNKNOWN", 
+        vehicle_id: session.vehicle_id, 
+        trend_summary: summary,
+        history 
+      }});
       setAi(res);
-      toast.success("AI analysis ready");
+      toast.success("AI analysis complete — detailed diagnosis ready");
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : "AI analysis failed";
       console.error("[v0] AI analysis error:", errorMsg);
