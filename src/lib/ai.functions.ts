@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import OpenAI from "openai";
 
 const AnalyzeInput = z.object({
   dtc_code: z.string(),
@@ -17,72 +18,45 @@ const ReportInput = z.object({
 });
 
 async function callOpenAI(system: string, user: string, maxRetries: number = 3): Promise<string> {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) throw new Error("OPENAI_API_KEY missing");
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.error("[v0] OPENAI_API_KEY is not set in environment variables");
+    throw new Error("OPENAI_API_KEY is missing. Please add it to your .env file or Vercel environment variables.");
+  }
+  
+  console.log("[v0] Initializing OpenAI client with API key");
+  const openai = new OpenAI({ apiKey });
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       console.log(`[v0] OpenAI API call attempt ${attempt + 1}/${maxRetries}, model: gpt-4o-mini`);
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout
       
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          temperature: 0.3,
-          max_tokens: 2000, // Increased to allow detailed analysis with multiple causes and steps
-        }),
-        signal: controller.signal,
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.3,
+        max_tokens: 2000,
       });
       
-      clearTimeout(timeoutId);
-      
-      // Handle rate limiting (429) with exponential backoff
-      if (res.status === 429) {
-        const retryAfter = parseInt(res.headers.get("retry-after") ?? String(Math.pow(2, attempt + 1) * 2), 10);
-        const waitTime = Math.min(retryAfter * 1000, 45000); // Max 45s wait
-        console.log(`[v0] Rate limited (429). Waiting ${waitTime}ms before retry (attempt ${attempt + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        continue;
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error("Empty response from OpenAI");
       }
       
-      if (!res.ok) {
-        const t = await res.text();
-        console.log(`[v0] API error ${res.status}: ${t.slice(0, 100)}`);
-        
-        // Don't retry on 401/403 auth errors
-        if (res.status === 401 || res.status === 403) {
-          throw new Error(`OpenAI Auth Error: Please check your API key is valid and active`);
-        }
-        
-        // Retry on 500+ and 503 errors
-        if ((res.status >= 500 || res.status === 503) && attempt < maxRetries - 1) {
-          const delay = Math.pow(2, attempt + 1) * 1500; // Longer delays
-          console.log(`[v0] Server error ${res.status}. Waiting ${delay}ms before retry...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-          continue;
-        }
-        
-        throw new Error(`OpenAI API error ${res.status}: ${t.slice(0, 150)}`);
-      }
-      
-      const data = await res.json() as { choices: { message: { content: string } }[] };
-      const content = data.choices[0]?.message?.content;
-      if (!content) throw new Error("Empty response from OpenAI");
-      console.log(`[v0] OpenAI response received successfully`);
+      console.log(`[v0] OpenAI response received successfully (${content.length} chars)`);
       return content;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.log(`[v0] Attempt ${attempt + 1}/${maxRetries} failed: ${errorMsg.slice(0, 100)}`);
+      console.log(`[v0] Attempt ${attempt + 1}/${maxRetries} failed: ${errorMsg.slice(0, 150)}`);
+      
+      // Check for specific error types
+      if (errorMsg.includes("401") || errorMsg.includes("Unauthorized") || errorMsg.includes("invalid_api_key")) {
+        console.error("[v0] Authentication error: API key is invalid or expired");
+        throw new Error("OpenAI API key is invalid. Please check your OPENAI_API_KEY environment variable.");
+      }
       
       // If it's the last attempt, throw the error
       if (attempt === maxRetries - 1) {
@@ -90,8 +64,8 @@ async function callOpenAI(system: string, user: string, maxRetries: number = 3):
         throw error;
       }
       
-      // Otherwise wait and retry with longer delays
-      const delay = Math.pow(2, attempt + 1) * 2000; // Exponential backoff: 4s, 8s, 16s
+      // Otherwise wait and retry with exponential backoff
+      const delay = Math.pow(2, attempt + 1) * 2000;
       console.log(`[v0] Retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
