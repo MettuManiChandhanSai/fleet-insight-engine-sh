@@ -4,9 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth";
 import { generateTrace, DTC_POOL, type Sample } from "@/lib/mock-trace";
+import { exportSamplesAsCSV, downloadCSV } from "@/lib/csv-export";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine } from "recharts";
 import { toast } from "sonner";
-import { Radio, Square, Zap } from "lucide-react";
+import { Radio, Square, Zap, Download } from "lucide-react";
 
 export const Route = createFileRoute("/app/record")({ component: Record });
 
@@ -59,6 +60,13 @@ function Record() {
     const covered = Math.min(100, Math.round((samples.length / (20*6)) * 100));
     return covered;
   }, [samples]);
+
+  function exportSessionToCSV() {
+    const csv = exportSamplesAsCSV(samples, vehicleId, faultAt ? DTC_POOL[Math.floor(Math.random() * DTC_POOL.length)] : null);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
+    downloadCSV(csv, `session_${vehicleId}_${timestamp}.csv`);
+    toast.success("CSV exported successfully");
+  }
 
   async function confirmAndSend() {
     if (!profile) return;
@@ -122,6 +130,9 @@ function Record() {
                 </div>
                 <button onClick={confirmAndSend} className="w-full h-12 bg-accent text-accent-foreground rounded hover:opacity-90">
                   Confirm & choose analyzer →
+                </button>
+                <button onClick={exportSessionToCSV} className="w-full h-10 border border-border rounded text-sm hover:bg-muted flex items-center justify-center gap-2">
+                  <Download className="h-4 w-4" /> Export as CSV
                 </button>
                 <button onClick={() => { setState("idle"); setSamples([]); setFaultAt(null); }} className="w-full h-10 border border-border rounded text-sm hover:bg-muted">
                   Discard & record again

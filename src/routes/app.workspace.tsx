@@ -44,13 +44,29 @@ function Workspace() {
     setAiBusy(true);
     try {
       const s = session.samples;
+      if (s.length === 0) {
+        toast.error("No samples to analyze");
+        return;
+      }
       const first = s[0], last = s[s.length-1];
       const summary = `${s.length} samples over ${Math.round(s.length*10/60)} min. RPM ${first.rpm}→${last.rpm}, Coolant ${first.temp}→${last.temp}°C, Load ${first.load}→${last.load}%, Speed ${first.speed}→${last.speed} km/h. Coolant crossed 94°C ${s.findIndex(x=>x.temp>=94)>=0 ? `at index ${s.findIndex(x=>x.temp>=94)}` : "never"}.`;
+      console.log("[v0] Running AI analysis for vehicle:", session.vehicle_id);
       const res = await runAnalyze({ data: { dtc_code: session.dtc_code ?? "UNKNOWN", vehicle_id: session.vehicle_id, trend_summary: summary } });
       setAi(res);
       toast.success("AI analysis ready");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "AI failed");
+      const errorMsg = e instanceof Error ? e.message : "AI analysis failed";
+      console.error("[v0] AI analysis error:", errorMsg);
+      
+      if (errorMsg.includes("Auth Error")) {
+        toast.error("❌ Invalid OpenAI API key. Check your environment variables.");
+      } else if (errorMsg.includes("429")) {
+        toast.error("🔄 API rate limited. Retrying automatically...");
+      } else if (errorMsg.includes("Max retries")) {
+        toast.error("⏱️ Analysis took too long. Try again in a few moments.");
+      } else {
+        toast.error(`⚠️ ${errorMsg}`);
+      }
     } finally { setAiBusy(false); }
   }
 

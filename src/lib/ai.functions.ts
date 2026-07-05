@@ -16,30 +16,68 @@ const ReportInput = z.object({
   history: z.string().optional(),
 });
 
-async function callOpenAI(system: string, user: string): Promise<string> {
+async function callOpenAI(system: string, user: string, maxRetries: number = 3): Promise<string> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY missing");
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      temperature: 0.3,
-    }),
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`OpenAI ${res.status}: ${t.slice(0, 200)}`);
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          temperature: 0.3,
+          max_tokens: 1000, // Prevent token overflow
+        }),
+      });
+      
+      // Handle rate limiting (429) with exponential backoff
+      if (res.status === 429) {
+        const retryAfter = parseInt(res.headers.get("retry-after") ?? String(Math.pow(2, attempt)), 10);
+        const waitTime = Math.min(retryAfter * 1000, 30000); // Max 30s wait
+        console.log(`[v0] Rate limited. Waiting ${waitTime}ms before retry (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      if (!res.ok) {
+        const t = await res.text();
+        // Don't retry on 401/403 auth errors
+        if (res.status === 401 || res.status === 403) {
+          throw new Error(`OpenAI Auth Error: Please check your API key`);
+        }
+        // Retry on 500+ errors
+        if (res.status >= 500 && attempt < maxRetries - 1) {
+          const delay = Math.pow(2, attempt) * 1000;
+          console.log(`[v0] Server error. Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        throw new Error(`OpenAI ${res.status}: ${t.slice(0, 200)}`);
+      }
+      
+      const data = await res.json() as { choices: { message: { content: string } }[] };
+      return data.choices[0]?.message?.content ?? "";
+    } catch (error) {
+      // If it's the last attempt, throw the error
+      if (attempt === maxRetries - 1) throw error;
+      
+      // Otherwise wait and retry
+      const delay = Math.pow(2, attempt) * 1000;
+      console.log(`[v0] Request failed. Retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
   }
-  const data = await res.json() as { choices: { message: { content: string } }[] };
-  return data.choices[0]?.message?.content ?? "";
+  
+  throw new Error("Max retries exceeded for OpenAI API call");
 }
 
 export const analyzeFault = createServerFn({ method: "POST" })
