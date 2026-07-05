@@ -22,24 +22,21 @@ async function callGemini(system: string, user: string, maxRetries: number = 3):
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      console.log(`[v0] Google Gemini API call attempt ${attempt + 1}/${maxRetries}, model: gemini-1.5-flash`);
+      console.log(`[v0] Google Gemini API call attempt ${attempt + 1}/${maxRetries}, model: gemini-2.0-flash`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout
       
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent", {
+      const combinedPrompt = `${system}\n\n${user}`;
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-goog-api-key": key,
         },
         body: JSON.stringify({
-          system_instruction: {
-            parts: [{ text: system }]
-          },
           contents: [
             {
-              role: "user",
-              parts: [{ text: user }]
+              parts: [{ text: combinedPrompt }]
             }
           ],
           generationConfig: {
@@ -63,11 +60,12 @@ async function callGemini(system: string, user: string, maxRetries: number = 3):
       
       if (!res.ok) {
         const t = await res.text();
-        console.log(`[v0] API error ${res.status}: ${t.slice(0, 100)}`);
+        console.log(`[v0] API error ${res.status}: ${t}`);
         
         // Don't retry on 401/403 auth errors
         if (res.status === 401 || res.status === 403) {
-          throw new Error(`Google Gemini Auth Error: Please check your API key is valid and active`);
+          console.error(`[v0] Auth error response: ${t}`);
+          throw new Error(`Google Gemini Auth Error: Please check your API key is valid and active. Response: ${t.slice(0, 200)}`);
         }
         
         // Retry on 500+ and 503 errors
@@ -82,8 +80,12 @@ async function callGemini(system: string, user: string, maxRetries: number = 3):
       }
       
       const data = await res.json() as { candidates: { content: { parts: { text: string }[] } }[] };
-      const content = data.candidates[0]?.content?.parts[0]?.text;
-      if (!content) throw new Error("Empty response from Google Gemini");
+      console.log(`[v0] Gemini response data:`, JSON.stringify(data).slice(0, 200));
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!content) {
+        console.error(`[v0] Empty response from Google Gemini. Data structure:`, JSON.stringify(data));
+        throw new Error("Empty response from Google Gemini");
+      }
       console.log(`[v0] Google Gemini response received successfully`);
       return content;
     } catch (error) {
