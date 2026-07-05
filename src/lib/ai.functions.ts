@@ -33,12 +33,13 @@ async function callGemini(system: string, user: string, maxRetries: number = 3):
           "x-goog-api-key": key,
         },
         body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: system }]
+          },
           contents: [
             {
-              parts: [
-                { text: system },
-                { text: user }
-              ]
+              role: "user",
+              parts: [{ text: user }]
             }
           ],
           generationConfig: {
