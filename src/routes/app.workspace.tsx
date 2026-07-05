@@ -58,14 +58,14 @@ function Workspace() {
       const errorMsg = e instanceof Error ? e.message : "AI analysis failed";
       console.error("[v0] AI analysis error:", errorMsg);
       
-      if (errorMsg.includes("Auth Error")) {
-        toast.error("❌ Invalid OpenAI API key. Check your environment variables.");
+      if (errorMsg.includes("not found. Run: ollama pull")) {
+        toast.error("Ollama model not pulled. Run `ollama pull` for your model, or let the Gateway fallback handle it.");
       } else if (errorMsg.includes("429")) {
-        toast.error("🔄 API rate limited. Retrying automatically...");
-      } else if (errorMsg.includes("Max retries")) {
-        toast.error("⏱️ Analysis took too long. Try again in a few moments.");
+        toast.error("API rate limited. Please try again in a moment.");
+      } else if (errorMsg.toLowerCase().includes("abort") || errorMsg.toLowerCase().includes("timeout")) {
+        toast.error("Analysis timed out. Try again in a few moments.");
       } else {
-        toast.error(`⚠️ ${errorMsg}`);
+        toast.error(errorMsg);
       }
     } finally { setAiBusy(false); }
   }
