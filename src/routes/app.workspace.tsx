@@ -59,7 +59,7 @@ function Workspace() {
       console.error("[v0] AI analysis error:", errorMsg);
       
       if (errorMsg.includes("Auth Error")) {
-        toast.error("❌ Invalid OpenAI API key. Check your environment variables.");
+        toast.error("❌ Invalid Google Gemini API key. Check your environment variables.");
       } else if (errorMsg.includes("429")) {
         toast.error("🔄 API rate limited. Retrying automatically...");
       } else if (errorMsg.includes("Max retries")) {

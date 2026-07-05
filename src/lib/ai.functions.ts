@@ -16,30 +16,35 @@ const ReportInput = z.object({
   history: z.string().optional(),
 });
 
-async function callOpenAI(system: string, user: string, maxRetries: number = 3): Promise<string> {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) throw new Error("OPENAI_API_KEY missing");
+async function callGemini(system: string, user: string, maxRetries: number = 3): Promise<string> {
+  const key = process.env.GOOGLE_API_KEY;
+  if (!key) throw new Error("GOOGLE_API_KEY missing");
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      console.log(`[v0] OpenAI API call attempt ${attempt + 1}/${maxRetries}, model: gpt-4o-mini`);
+      console.log(`[v0] Google Gemini API call attempt ${attempt + 1}/${maxRetries}, model: gemini-1.5-flash`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout
       
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${key}`,
+          "x-goog-api-key": key,
         },
         body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
+          contents: [
+            {
+              parts: [
+                { text: system },
+                { text: user }
+              ]
+            }
           ],
-          temperature: 0.3,
-          max_tokens: 800, // Reduced from 1000 for faster response
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 800,
+          },
         }),
         signal: controller.signal,
       });
@@ -61,7 +66,7 @@ async function callOpenAI(system: string, user: string, maxRetries: number = 3):
         
         // Don't retry on 401/403 auth errors
         if (res.status === 401 || res.status === 403) {
-          throw new Error(`OpenAI Auth Error: Please check your API key is valid and active`);
+          throw new Error(`Google Gemini Auth Error: Please check your API key is valid and active`);
         }
         
         // Retry on 500+ and 503 errors
@@ -72,13 +77,13 @@ async function callOpenAI(system: string, user: string, maxRetries: number = 3):
           continue;
         }
         
-        throw new Error(`OpenAI API error ${res.status}: ${t.slice(0, 150)}`);
+        throw new Error(`Google Gemini API error ${res.status}: ${t.slice(0, 150)}`);
       }
       
-      const data = await res.json() as { choices: { message: { content: string } }[] };
-      const content = data.choices[0]?.message?.content;
-      if (!content) throw new Error("Empty response from OpenAI");
-      console.log(`[v0] OpenAI response received successfully`);
+      const data = await res.json() as { candidates: { content: { parts: { text: string }[] } }[] };
+      const content = data.candidates[0]?.content?.parts[0]?.text;
+      if (!content) throw new Error("Empty response from Google Gemini");
+      console.log(`[v0] Google Gemini response received successfully`);
       return content;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -97,7 +102,7 @@ async function callOpenAI(system: string, user: string, maxRetries: number = 3):
     }
   }
   
-  throw new Error("Max retries exceeded for OpenAI API call");
+  throw new Error("Max retries exceeded for Google Gemini API call");
 }
 
 export const analyzeFault = createServerFn({ method: "POST" })
@@ -106,7 +111,7 @@ export const analyzeFault = createServerFn({ method: "POST" })
     const system = "You are a senior commercial-vehicle diagnostic engineer for a truck OEM. You analyze pre-fault engine telemetry (RPM, coolant temperature, engine load, speed) captured in the 10–30 minutes before a DTC fires. Identify the anomalies in the trajectory, suggest the 2–3 most likely root causes with confidence 0–1, and recommend a fix. Return STRICT JSON with keys: deviation_summary (string, 2–3 sentences), causes (array of {cause: string, confidence: number, rationale: string}), recommended_fix (string).";
     const user = `DTC: ${data.dtc_code}\nVehicle: ${data.vehicle_id}\nPre-fault trend summary:\n${data.trend_summary}\n\nVehicle history:\n${data.history ?? "No prior cases."}\n\nReturn ONLY JSON, no prose, no markdown.`;
     console.log(`[v0] Starting analysis for vehicle ${data.vehicle_id} with DTC ${data.dtc_code}`);
-    const raw = await callOpenAI(system, user, 4); // Increased from 3 to 4 retry attempts
+    const raw = await callGemini(system, user, 4); // Increased from 3 to 4 retry attempts
     const cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/```$/, "");
     try {
       const result = JSON.parse(cleaned) as { deviation_summary: string; causes: {cause:string;confidence:number;rationale:string}[]; recommended_fix: string };
@@ -123,7 +128,7 @@ export const draftReport = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const system = "You are a diagnostic report writer for a commercial fleet workshop. Write a clear, plain-language field report for the integrator who will physically verify the vehicle. Return STRICT JSON with keys: issue (1–2 sentences), evidence (2–4 sentences citing the deviations), recommended_fix (numbered inspection/repair steps), history_notes (1–2 sentences).";
     const user = `DTC: ${data.dtc_code}\nVehicle: ${data.vehicle_id}\nDeviation observed:\n${data.deviation}\n\nSuspected causes:\n${data.causes}\n\nVehicle history:\n${data.history ?? "None."}\n\nReturn ONLY JSON.`;
-    const raw = await callOpenAI(system, user);
+    const raw = await callGemini(system, user);
     const cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/```$/, "");
     try {
       return JSON.parse(cleaned) as { issue: string; evidence: string; recommended_fix: string; history_notes: string };
